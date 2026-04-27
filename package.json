@@ -27,6 +27,13 @@
   "author": "SocialRouter",
   "license": "MIT",
   "homepage": "https://www.socialrouter.io",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/socialrouter/cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/socialrouter/cli/issues"
+  },
   "publishConfig": {
     "access": "public"
   },
