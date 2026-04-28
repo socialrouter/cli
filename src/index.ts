@@ -31,8 +31,7 @@ program
   .command("extract")
   .description("Extract data from a social media URL")
   .requiredOption("-u, --url <url>", "Social media URL to extract from")
-  .requiredOption("-t, --type <type>", "Extraction type (post.likes, post.comments, profile.info, profile.posts, profile.followers)")
-  .option("-p, --provider <provider>", "Preferred provider (e.g. apify)")
+  .requiredOption("-p, --provider <provider>", "Service slug provider/platform/type (e.g. apify/linkedin/profile.info). Copy from the providers page.")
   .option("-l, --limit <number>", "Max results", "100")
   .option("-j, --json", "Output raw JSON")
   .action(async (opts) => {
@@ -42,7 +41,6 @@ program
     try {
       const result = await client.extract({
         url: opts.url,
-        type: opts.type,
         provider: opts.provider,
         limit: parseInt(opts.limit),
       });

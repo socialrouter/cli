@@ -11,7 +11,7 @@ npm install -g @socialrouter/cli
 Or run without installing:
 
 ```bash
-npx @socialrouter/cli extract -u "..." -t post.likes
+npx @socialrouter/cli extract -u "..." -p apify/linkedin/post.likes
 ```
 
 Or run locally from the repo:
@@ -53,30 +53,29 @@ export SOCIALROUTER_BASE_URL=http://proxy.example.com:3100
 ### `extract` — Extract data from a URL
 
 ```bash
-socialrouter extract -u <url> -t <type> [options]
+socialrouter extract -u <url> -p <provider-slug> [options]
 ```
 
 | Flag | Description |
 |---|---|
 | `-u, --url <url>` | Social media URL (required) |
-| `-t, --type <type>` | Extraction type (required) |
-| `-p, --provider <id>` | Preferred provider |
+| `-p, --provider <slug>` | Service slug `provider/platform/type` (required) |
 | `-l, --limit <n>` | Max records (default: 100) |
 | `-j, --json` | Output raw JSON |
 
-**Extraction types:** `post.likes`, `post.comments`, `profile.info`, `profile.posts`, `profile.followers`
+The slug fully specifies the routing target: provider, platform, and extraction type. Copy one from [socialrouter.io/providers](https://www.socialrouter.io/providers).
 
 **Examples:**
 
 ```bash
 # Get likers of a LinkedIn post
-socialrouter extract -u "https://linkedin.com/posts/johndoe_some-post-id" -t post.likes
+socialrouter extract -u "https://linkedin.com/posts/johndoe_some-post-id" -p apify/linkedin/post.likes
 
 # Get Instagram profile info as JSON
-socialrouter extract -u "https://instagram.com/johndoe" -t profile.info -j
+socialrouter extract -u "https://instagram.com/johndoe" -p apify/instagram/profile.info -j
 
-# Get 20 comments from an X post, using Apify
-socialrouter extract -u "https://x.com/johndoe/status/123456" -t post.comments -p apify -l 20
+# Get 20 comments from an X post
+socialrouter extract -u "https://x.com/johndoe/status/123456" -p apify/x/post.comments -l 20
 ```
 
 ---
@@ -145,8 +144,8 @@ socialrouter balance
 socialrouter providers
 
 # 4. Run your first extraction
-socialrouter extract -u "https://linkedin.com/posts/johndoe_some-post-id" -t post.likes
+socialrouter extract -u "https://linkedin.com/posts/johndoe_some-post-id" -p apify/linkedin/post.likes
 
 # 5. Get raw JSON output
-socialrouter extract -u "https://linkedin.com/posts/johndoe_some-post-id" -t post.likes -j
+socialrouter extract -u "https://linkedin.com/posts/johndoe_some-post-id" -p apify/linkedin/post.likes -j
 ```
