@@ -41,11 +41,38 @@ program
   )
   .option("-l, --limit <number>", "Max records", "100")
   .option("--no-fallback", "Disable router fallback — fail if the requested provider errors")
+  .option(
+    "-o, --options <json>",
+    "Per-actor input overrides as a JSON object (e.g. '{\"proxyCountry\":\"US\"}'). Each actor decides which keys it honors."
+  )
   .option("-j, --json", "Output raw JSON")
   .action(async (opts) => {
     if (!opts.url && !opts.urls) {
       console.error(chalk.red("Error: provide either --url or --urls."));
       process.exit(1);
+    }
+    let actorOptions: Record<string, unknown> | undefined;
+    if (opts.options !== undefined) {
+      try {
+        const parsed: unknown = JSON.parse(opts.options);
+        if (
+          parsed === null ||
+          typeof parsed !== "object" ||
+          Array.isArray(parsed)
+        ) {
+          throw new Error("must be a JSON object");
+        }
+        actorOptions = parsed as Record<string, unknown>;
+      } catch (e) {
+        console.error(
+          chalk.red(
+            `Error: --options must be a JSON object string (${
+              e instanceof Error ? e.message : "parse error"
+            }).`
+          )
+        );
+        process.exit(1);
+      }
     }
     const client = getClient();
     const spinner = opts.json ? null : ora("Extracting data...").start();
@@ -61,6 +88,7 @@ program
         provider: opts.provider,
         limit: parseInt(opts.limit),
         fallback: opts.fallback,
+        options: actorOptions,
       });
 
       if (spinner) spinner.stop();
@@ -93,8 +121,35 @@ program
   )
   .option("-l, --limit <number>", "Per-query record cap", "100")
   .option("--no-fallback", "Disable router fallback — fail if the requested provider errors")
+  .option(
+    "-o, --options <json>",
+    "Per-actor input overrides as a JSON object (e.g. '{\"language\":\"en\"}'). Each actor decides which keys it honors."
+  )
   .option("-j, --json", "Output raw JSON")
   .action(async (opts) => {
+    let actorOptions: Record<string, unknown> | undefined;
+    if (opts.options !== undefined) {
+      try {
+        const parsed: unknown = JSON.parse(opts.options);
+        if (
+          parsed === null ||
+          typeof parsed !== "object" ||
+          Array.isArray(parsed)
+        ) {
+          throw new Error("must be a JSON object");
+        }
+        actorOptions = parsed as Record<string, unknown>;
+      } catch (e) {
+        console.error(
+          chalk.red(
+            `Error: --options must be a JSON object string (${
+              e instanceof Error ? e.message : "parse error"
+            }).`
+          )
+        );
+        process.exit(1);
+      }
+    }
     const client = getClient();
     const spinner = opts.json ? null : ora("Searching...").start();
 
@@ -115,6 +170,7 @@ program
         provider: opts.provider,
         limit: parseInt(opts.limit),
         fallback: opts.fallback,
+        options: actorOptions,
       });
 
       if (spinner) spinner.stop();
