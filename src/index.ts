@@ -15,6 +15,7 @@ function getClient(): SocialRouter {
   return new SocialRouter({
     apiKey,
     baseUrl: process.env.SOCIALROUTER_BASE_URL,
+    client: "cli",
   });
 }
 
@@ -23,7 +24,7 @@ const program = new Command();
 program
   .name("socialrouter")
   .description("CLI for the SocialRouter API — extract social media data from any provider")
-  .version("0.3.0");
+  .version("0.3.2");
 
 // ─── extract ─────────────────────────────────────────────
 
