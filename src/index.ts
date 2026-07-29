@@ -44,7 +44,7 @@ program
   .option("--no-fallback", "Disable router fallback — fail if the requested provider errors")
   .option(
     "-o, --options <json>",
-    "Per-actor input overrides as a JSON object (e.g. '{\"proxyCountry\":\"US\"}'). Each actor decides which keys it honors."
+    "Per-actor input overrides as a JSON object (e.g. '{\"includeEmail\":false}'). Each actor decides which keys it honors; unknown keys are dropped without an error."
   )
   .option("-j, --json", "Output raw JSON")
   .action(async (opts) => {
@@ -124,7 +124,7 @@ program
   .option("--no-fallback", "Disable router fallback — fail if the requested provider errors")
   .option(
     "-o, --options <json>",
-    "Per-actor input overrides as a JSON object (e.g. '{\"language\":\"en\"}'). Each actor decides which keys it honors."
+    "Per-actor input overrides as a JSON object (e.g. '{\"hasSubtitles\":true}'). Each actor decides which keys it honors; unknown keys are dropped without an error."
   )
   .option("-j, --json", "Output raw JSON")
   .action(async (opts) => {
