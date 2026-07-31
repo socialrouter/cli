@@ -3,7 +3,12 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
-import { SocialRouter } from "@socialrouter/sdk";
+import {
+  SocialRouter,
+  SERVICE_INPUT_KIND,
+  type CatalogueService,
+  type Extraction,
+} from "@socialrouter/sdk";
 
 function getClient(): SocialRouter {
   const apiKey = process.env.SOCIALROUTER_API_KEY;
@@ -23,73 +28,66 @@ const program = new Command();
 
 program
   .name("socialrouter")
-  .description("CLI for the SocialRouter API — extract social media data from any provider")
+  .description("CLI for the SocialRouter API, one endpoint per service, routed across sources")
   .version("0.3.2");
 
-// ─── extract ─────────────────────────────────────────────
+// ─── run ─────────────────────────────────────────────────
 
 program
-  .command("extract")
-  .description("Extract data from one or more social media URLs")
-  .option("-u, --url <url>", "Single social media URL")
-  .option(
-    "-U, --urls <urls>",
-    "Comma-separated list of URLs for batch-capable actors (e.g. 'u1,u2,u3')"
+  .command("run")
+  .description("Run a service over one or more inputs")
+  .argument("<service>", "Service slug <platform>/<service>, e.g. reddit/subreddit.posts")
+  .argument(
+    "<inputs...>",
+    "URLs (url services) or search queries (query services). Quote queries containing spaces.",
   )
-  .requiredOption(
-    "-p, --provider <provider>",
-    "Service slug provider/platform/type[:tag] (e.g. apify/linkedin/profile.info). Copy from the providers page."
+  .option(
+    "-p, --provider <offer>",
+    "Pin one offer, e.g. apify/harshmaur. Omit to let the router pick and fail over.",
   )
   .option("-l, --limit <number>", "Max records", "100")
-  .option("--no-fallback", "Disable router fallback — fail if the requested provider errors")
   .option(
     "-o, --options <json>",
-    "Per-actor input overrides as a JSON object (e.g. '{\"includeEmail\":false}'). Each actor decides which keys it honors; unknown keys are dropped without an error."
+    "Typed options as a JSON object (e.g. '{\"sort\":\"top\"}'). Run `socialrouter services <slug>` to see what a service accepts.",
   )
   .option("-j, --json", "Output raw JSON")
-  .action(async (opts) => {
-    if (!opts.url && !opts.urls) {
-      console.error(chalk.red("Error: provide either --url or --urls."));
-      process.exit(1);
-    }
-    let actorOptions: Record<string, unknown> | undefined;
+  .action(async (service: string, inputs: string[], opts) => {
+    let serviceOptions: Record<string, unknown> | undefined;
     if (opts.options !== undefined) {
       try {
         const parsed: unknown = JSON.parse(opts.options);
-        if (
-          parsed === null ||
-          typeof parsed !== "object" ||
-          Array.isArray(parsed)
-        ) {
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
           throw new Error("must be a JSON object");
         }
-        actorOptions = parsed as Record<string, unknown>;
+        serviceOptions = parsed as Record<string, unknown>;
       } catch (e) {
         console.error(
           chalk.red(
             `Error: --options must be a JSON object string (${
               e instanceof Error ? e.message : "parse error"
-            }).`
-          )
+            }).`,
+          ),
         );
         process.exit(1);
       }
     }
+
+    const limit = Number(opts.limit);
+    if (!Number.isInteger(limit) || limit < 1) {
+      console.error(chalk.red("Error: --limit must be a positive integer."));
+      process.exit(1);
+    }
+
     const client = getClient();
-    const spinner = opts.json ? null : ora("Extracting data...").start();
+    const spinner = opts.json ? null : ora(`Running ${service}...`).start();
 
     try {
-      const urls: string[] | undefined = opts.urls
-        ? opts.urls.split(",").map((u: string) => u.trim()).filter(Boolean)
-        : undefined;
-
-      const result = await client.extract({
-        url: opts.url,
-        urls,
-        provider: opts.provider,
-        limit: parseInt(opts.limit),
-        fallback: opts.fallback,
-        options: actorOptions,
+      const field = await inputField(client, service);
+      const result = await runService(client, service, {
+        [field]: inputs,
+        ...(opts.provider ? { provider: opts.provider } : {}),
+        limit,
+        ...(serviceOptions ? { options: serviceOptions } : {}),
       });
 
       if (spinner) spinner.stop();
@@ -99,133 +97,109 @@ program
         return;
       }
 
-      printExtraction(result);
+      printRun(result);
     } catch (err) {
-      if (spinner) spinner.fail("Extraction failed");
+      if (spinner) spinner.fail("Run failed");
       console.error(chalk.red(err instanceof Error ? err.message : "Unknown error"));
       process.exit(1);
     }
   });
 
-// ─── search ──────────────────────────────────────────────
+// ─── services ────────────────────────────────────────────
 
 program
-  .command("search")
-  .description("Run a query-driven search (e.g. Google Maps place search)")
-  .requiredOption(
-    "-q, --queries <queries>",
-    "Comma-separated list of search queries (terms or context-pinning URLs)"
-  )
-  .requiredOption(
-    "-p, --provider <provider>",
-    "Search service slug provider/platform/type[:tag] (e.g. apify/googlemaps/place.search)"
-  )
-  .option("-l, --limit <number>", "Per-query record cap", "100")
-  .option("--no-fallback", "Disable router fallback — fail if the requested provider errors")
-  .option(
-    "-o, --options <json>",
-    "Per-actor input overrides as a JSON object (e.g. '{\"hasSubtitles\":true}'). Each actor decides which keys it honors; unknown keys are dropped without an error."
+  .command("services")
+  .description("Browse the service catalogue")
+  .argument(
+    "[filter]",
+    "A platform (e.g. reddit) or a full service slug (e.g. reddit/subreddit.posts) for the detailed view",
   )
   .option("-j, --json", "Output raw JSON")
-  .action(async (opts) => {
-    let actorOptions: Record<string, unknown> | undefined;
-    if (opts.options !== undefined) {
-      try {
-        const parsed: unknown = JSON.parse(opts.options);
-        if (
-          parsed === null ||
-          typeof parsed !== "object" ||
-          Array.isArray(parsed)
-        ) {
-          throw new Error("must be a JSON object");
+  .action(async (filter: string | undefined, opts) => {
+    const client = getClient();
+
+    try {
+      // A slug (contains "/") gets the detailed view: input shapes, typed
+      // options and every offer. A bare platform, or nothing, lists.
+      if (filter?.includes("/")) {
+        const service = await client.getService(filter as Parameters<typeof client.getService>[0]);
+        if (opts.json) {
+          console.log(JSON.stringify(service, null, 2));
+          return;
         }
-        actorOptions = parsed as Record<string, unknown>;
-      } catch (e) {
-        console.error(
-          chalk.red(
-            `Error: --options must be a JSON object string (${
-              e instanceof Error ? e.message : "parse error"
-            }).`
-          )
-        );
-        process.exit(1);
-      }
-    }
-    const client = getClient();
-    const spinner = opts.json ? null : ora("Searching...").start();
-
-    try {
-      const queries: string[] = opts.queries
-        .split(",")
-        .map((q: string) => q.trim())
-        .filter(Boolean);
-
-      if (queries.length === 0) {
-        if (spinner) spinner.stop();
-        console.error(chalk.red("Error: --queries must contain at least one non-empty value."));
-        process.exit(1);
-      }
-
-      const result = await client.search({
-        queries,
-        provider: opts.provider,
-        limit: parseInt(opts.limit),
-        fallback: opts.fallback,
-        options: actorOptions,
-      });
-
-      if (spinner) spinner.stop();
-
-      if (opts.json) {
-        console.log(JSON.stringify(result, null, 2));
+        printServiceDetail(service);
         return;
       }
 
-      printExtraction(result);
+      const services = await client.listServices(
+        filter ? ({ platform: filter } as Parameters<typeof client.listServices>[0]) : undefined,
+      );
+
+      if (opts.json) {
+        console.log(JSON.stringify(services, null, 2));
+        return;
+      }
+
+      console.log();
+      console.log(chalk.bold(filter ? `Services on ${filter}` : "Services"));
+      let platform = "";
+      for (const s of services) {
+        if (s.platform !== platform) {
+          platform = s.platform;
+          console.log();
+          console.log(chalk.bold(`  ${platform}`));
+        }
+        const from = Math.min(...s.offers.map((o) => o.price_per_record));
+        console.log(
+          `    ${chalk.green(`${s.platform}/${s.service}`)} ` +
+            chalk.dim(
+              `${s.input_field} · from $${from}/record · ${s.offers.length} offer${s.offers.length > 1 ? "s" : ""}`,
+            ),
+        );
+      }
+      console.log();
+      console.log(chalk.dim("  Details: socialrouter services <platform>/<service>"));
+      console.log();
     } catch (err) {
-      if (spinner) spinner.fail("Search failed");
       console.error(chalk.red(err instanceof Error ? err.message : "Unknown error"));
       process.exit(1);
     }
   });
 
-// ─── providers ───────────────────────────────────────────
+// ─── sources ─────────────────────────────────────────────
 
 program
-  .command("providers")
-  .description("List available providers")
+  .command("sources")
+  .description("List the data sources behind the offers")
   .option("-j, --json", "Output raw JSON")
   .action(async (opts) => {
     const client = getClient();
 
     try {
-      const providers = await client.listProviders();
+      const sources = await client.listSources();
 
       if (opts.json) {
-        console.log(JSON.stringify(providers, null, 2));
+        console.log(JSON.stringify(sources, null, 2));
         return;
       }
 
       console.log();
-      console.log(chalk.bold("Available Providers"));
+      console.log(chalk.bold("Sources"));
       console.log();
 
-      for (const p of providers) {
+      for (const s of sources) {
         const statusColor =
-          p.status === "active"
+          s.status === "active"
             ? chalk.green
-            : p.status === "degraded"
+            : s.status === "degraded"
               ? chalk.yellow
-              : p.status === "down"
+              : s.status === "down"
                 ? chalk.red
                 : chalk.dim;
-        console.log(`  ${chalk.bold(p.name)} ${statusColor(`[${p.status}]`)}`);
-        console.log(chalk.dim(`  ${p.description}`));
-        console.log(chalk.dim(`  Platforms: ${p.supported_platforms.join(", ")}`));
-        console.log(chalk.dim(`  Extract:   ${p.supported_types.join(", ")}`));
-        if (p.supported_search_types?.length) {
-          console.log(chalk.dim(`  Search:    ${p.supported_search_types.join(", ")}`));
-        }
+        console.log(`  ${chalk.bold(s.name)} ${statusColor(`[${s.status}]`)} ${chalk.dim(`(${s.id})`)}`);
+        console.log(chalk.dim(`  ${s.description}`));
+        console.log(chalk.dim(`  Platforms: ${s.platforms.join(", ")}`));
+        console.log(chalk.dim(`  ${s.services_count} services · ${s.offers_count} offers`));
         console.log();
       }
     } catch (err) {
@@ -287,7 +261,7 @@ program
 
       if (Object.keys(usage.by_provider).length > 0) {
         console.log();
-        console.log(chalk.dim("  By provider:"));
+        console.log(chalk.dim("  By offer:"));
         for (const [name, data] of Object.entries(usage.by_provider)) {
           console.log(`    ${name}: ${data.requests} req, ${data.records} records, $${data.credits.toFixed(2)}`);
         }
@@ -312,7 +286,7 @@ program
 
 program
   .command("get <id>")
-  .description("Get extraction or search result by ID")
+  .description("Get a past run by ID")
   .option("-j, --json", "Output raw JSON")
   .action(async (id, opts) => {
     const client = getClient();
@@ -327,7 +301,7 @@ program
         return;
       }
 
-      printExtraction(result);
+      printRun(result);
     } catch (err) {
       if (spinner) spinner.fail("Failed");
       console.error(chalk.red(err instanceof Error ? err.message : "Unknown error"));
@@ -339,26 +313,74 @@ program.parse();
 
 // ─── helpers ─────────────────────────────────────────────
 
-type ExtractionLike = Awaited<ReturnType<SocialRouter["extract"]>>;
+/**
+ * The CLI dispatches over a runtime slug, so the SDK's per-service typing
+ * can't apply — this is the one boundary where the shape is decided at
+ * runtime instead of by the compiler.
+ */
+type AnyRunInput = {
+  urls?: string[];
+  queries?: string[];
+  provider?: `${string}/${string}`;
+  limit?: number;
+  options?: Record<string, unknown>;
+};
 
-function printExtraction(result: ExtractionLike): void {
-  console.log();
-  console.log(
-    `${chalk.bold(result.kind === "search" ? "Search" : "Extraction")} ${chalk.green(result.id)}`
+function runService(
+  client: SocialRouter,
+  service: string,
+  input: AnyRunInput,
+): Promise<Extraction> {
+  return (client.run as unknown as (s: string, i: AnyRunInput) => Promise<Extraction>)(
+    service,
+    input,
   );
-  const provider = result.fallback_from
-    ? `${result.provider} ${chalk.dim(`(requested ${result.fallback_from})`)}`
-    : result.provider;
+}
+
+/**
+ * Which body field carries the inputs: `urls` for a URL service, `queries`
+ * for a query one. Known services resolve offline from the SDK's generated
+ * map; anything newer than this CLI release is looked up in the live
+ * catalogue rather than guessed.
+ */
+async function inputField(client: SocialRouter, service: string): Promise<"urls" | "queries"> {
+  const known = (SERVICE_INPUT_KIND as Record<string, "url" | "query">)[service];
+  if (known) return known === "query" ? "queries" : "urls";
+
+  const catalogue = await client.listServices();
+  const match = catalogue.find((s) => `${s.platform}/${s.service}` === service);
+  if (!match) {
+    const platform = service.split("/")[0];
+    const onPlatform = catalogue.filter((s) => s.platform === platform);
+    const suggestions = (onPlatform.length ? onPlatform : catalogue)
+      .map((s) => `${s.platform}/${s.service}`)
+      .slice(0, 12);
+    throw new Error(
+      `Unknown service "${service}". Available: ${suggestions.join(", ")}.\n` +
+        "Run `socialrouter services` for the full catalogue.",
+    );
+  }
+  return match.input_field;
+}
+
+function printRun(result: Extraction): void {
+  console.log();
+  console.log(`${chalk.bold("Run")} ${chalk.green(result.id)}`);
+  const servedBy = result.served_by
+    ? result.fallback_from
+      ? `${result.served_by} ${chalk.dim(`(fell over from ${result.fallback_from})`)}`
+      : result.served_by
+    : chalk.dim("none");
   console.log(
     chalk.dim(
-      `Provider: ${provider} | Type: ${result.type} | Platform: ${result.source} | Credits: $${result.credits_used}`
-    )
+      `Service: ${result.platform}/${result.service} | Served by: ${servedBy} | Credits: $${result.credits_used}`,
+    ),
   );
   if (result.queries?.length) {
     console.log(chalk.dim(`Queries: ${result.queries.join(", ")}`));
   }
   console.log(
-    chalk.dim(`${result.pagination.returned} of ${result.pagination.total} records returned`)
+    chalk.dim(`${result.pagination.returned} of ${result.pagination.total} records returned`),
   );
   console.log();
 
@@ -372,8 +394,8 @@ function printExtraction(result: ExtractionLike): void {
     const headline = rec.name ?? rec.title ?? rec.profile_url ?? "(record)";
     console.log(
       `  ${chalk.bold(headline)}` +
-        (rec.name && rec.title ? chalk.dim(` — ${rec.title}`) : "") +
-        (rec.company ? chalk.dim(` @ ${rec.company}`) : "")
+        (rec.name && rec.title ? chalk.dim(` · ${rec.title}`) : "") +
+        (rec.company ? chalk.dim(` @ ${rec.company}`) : ""),
     );
   }
 
@@ -386,5 +408,52 @@ function printExtraction(result: ExtractionLike): void {
     console.log(chalk.red(`Error: ${result.error.message}`));
   }
 
+  console.log();
+}
+
+function printServiceDetail(s: CatalogueService): void {
+  console.log();
+  console.log(chalk.bold(`${s.platform}/${s.service}`));
+  console.log(chalk.dim(`  POST ${s.endpoint} · body field: ${s.input_field}`));
+  console.log();
+
+  console.log(chalk.bold("  Input"));
+  for (const a of s.accepts) {
+    console.log(`    ${a.format}`);
+    console.log(chalk.dim(`      e.g. ${a.example}`));
+    if (a.note) console.log(chalk.dim(`      ${a.note}`));
+  }
+  if (s.accepts.length === 0) console.log(chalk.dim("    (not advertised)"));
+  console.log();
+
+  if (s.options.length > 0) {
+    console.log(chalk.bold("  Options"));
+    for (const o of s.options) {
+      const type = o.type === "enum" ? (o.values ?? []).join(" | ") : o.type;
+      console.log(`    ${chalk.green(o.name)} ${chalk.dim(`(${type})`)}`);
+      console.log(
+        chalk.dim(
+          `      ${o.description}` +
+            (o.default !== undefined ? ` Default: ${JSON.stringify(o.default)}.` : ""),
+        ),
+      );
+    }
+    console.log();
+  }
+
+  console.log(chalk.bold("  Offers"), chalk.dim("(failover order, the head serves by default)"));
+  s.offers.forEach((o, i) => {
+    console.log(
+      `    ${chalk.green(o.offer)} ${chalk.dim(
+        `$${o.price_per_record}/record · up to ${o.max_inputs} inputs`,
+      )}${i === 0 ? chalk.dim(" · default route") : ""}`,
+    );
+  });
+  console.log();
+  console.log(
+    chalk.dim(
+      `  Run it: socialrouter run ${s.platform}/${s.service} "${s.accepts[0]?.example ?? "<input>"}"`,
+    ),
+  );
   console.log();
 }

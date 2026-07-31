@@ -1,6 +1,6 @@
 # SocialRouter CLI
 
-Command-line interface for the SocialRouter API. Extract social media data and run query-driven searches directly from your terminal. Supported platforms include LinkedIn, Instagram, X, Reddit, Facebook, TikTok, YouTube, Pinterest, Bluesky, Snapchat, and Google Maps.
+Command-line interface for the SocialRouter API. Fetch social media data from your terminal, routed across several sources behind one contract per service. Supported platforms include LinkedIn, Instagram, X, Reddit, Facebook, TikTok, YouTube, Pinterest, Bluesky, Snapchat, and Google Maps.
 
 ## Installation
 
@@ -11,7 +11,7 @@ npm install -g @socialrouter/cli
 Or run without installing:
 
 ```bash
-npx @socialrouter/cli extract -u "..." -p apify/linkedin/post.likes
+npx @socialrouter/cli run linkedin/post.likes "https://linkedin.com/posts/..."
 ```
 
 Or run locally from the repo:
@@ -41,89 +41,86 @@ By default the CLI points to `https://api.socialrouter.io`:
 export SOCIALROUTER_BASE_URL=http://proxy.example.com:3100
 ```
 
+## Services and offers
+
+A **service** is `platform/service` — `reddit/subreddit.posts`, `linkedin/profile.info`, `googlemaps/place.search`. That's what you run.
+
+An **offer** is one implementation of that service by a source: `apify/harshmaur`, `brightdata/reddit`. You normally don't pick one — the router walks the failover chain and the result tells you which offer answered (`Served by:`). Pin one with `--provider` when you want that offer and nothing else; pinning is what disables failover.
+
 ## Commands
 
-### `extract` — Extract data from one or more URLs
+### `run` — Run a service
 
 ```bash
-socialrouter extract -u <url> -p <provider-slug> [options]
-socialrouter extract -U <url1,url2,...> -p <provider-slug>
+socialrouter run <platform>/<service> <input...> [options]
 ```
 
 | Flag | Description |
 |---|---|
-| `-u, --url <url>` | Single social media URL |
-| `-U, --urls <list>` | Comma-separated list of URLs (batch-capable actors only) |
-| `-p, --provider <slug>` | Service slug `provider/platform/type[:tag]` (required) |
-| `-l, --limit <n>` | Max records (default: 100) |
-| `--no-fallback` | Disable router fallback — fail if the requested provider errors |
+| `-p, --provider <offer>` | Pin one offer, e.g. `apify/harshmaur`. Omit to let the router route. |
+| `-l, --limit <n>` | Max records (default: 100, max 250) |
+| `-o, --options <json>` | Typed options as a JSON object, e.g. `'{"sort":"top"}'` |
 | `-j, --json` | Output raw JSON |
 
-The slug fully specifies the routing target: provider, platform, extraction type, and (optionally) actor tag (e.g. `apify/linkedin/profile.posts:apimaestro`). Copy one from [socialrouter.io/providers](https://www.socialrouter.io/providers).
+Inputs are URLs for a URL service and free-text queries for a query service — `socialrouter services <slug>` says which, and shows the exact accepted shapes.
 
 **Examples:**
 
 ```bash
-# Get likers of a LinkedIn post
-socialrouter extract -u "https://linkedin.com/posts/johndoe_some-post-id" -p apify/linkedin/post.likes
+# Likers of a LinkedIn post
+socialrouter run linkedin/post.likes "https://linkedin.com/posts/johndoe_some-post-id"
 
 # Instagram profile info as JSON
-socialrouter extract -u "https://instagram.com/johndoe" -p apify/instagram/profile.info -j
+socialrouter run instagram/profile.info "https://instagram.com/johndoe" -j
 
-# 20 comments from an X post
-socialrouter extract -u "https://x.com/johndoe/status/123456" -p apify/x/post.comments -l 20
+# 20 comments from a TikTok video
+socialrouter run tiktok/video.comments "https://www.tiktok.com/@user/video/123" -l 20
 
-# Batch LinkedIn profile fetch
-socialrouter extract \
-  -U "https://linkedin.com/in/alice,https://linkedin.com/in/bob" \
-  -p apify/linkedin/profile.info
+# Batch LinkedIn profiles
+socialrouter run linkedin/profile.info \
+  "https://linkedin.com/in/alice" "https://linkedin.com/in/bob"
 
-# Skip the router fallback chain
-socialrouter extract -u "https://linkedin.com/in/johndoe" -p apify/linkedin/profile.info --no-fallback
+# Top posts of the week from a subreddit
+socialrouter run reddit/subreddit.posts "https://www.reddit.com/r/programming" \
+  -o '{"sort":"top","time":"week"}'
+
+# A query-driven service
+socialrouter run googlemaps/place.search "coffee shops in Brooklyn" "bakeries in Brooklyn" -l 50
+
+# Pin one offer (no failover)
+socialrouter run reddit/subreddit.posts "https://www.reddit.com/r/programming" -p apify/trudax
 ```
 
 ---
 
-### `search` — Run a query-driven search
+### `services` — Browse the catalogue
 
 ```bash
-socialrouter search -q <queries> -p <provider-slug> [options]
+socialrouter services                          # everything, grouped by platform
+socialrouter services reddit                   # one platform
+socialrouter services reddit/subreddit.posts   # detailed view
+socialrouter services -j                       # raw JSON
 ```
 
-| Flag | Description |
-|---|---|
-| `-q, --queries <list>` | Comma-separated list of search queries (required) |
-| `-p, --provider <slug>` | Search service slug, e.g. `apify/googlemaps/place.search` (required) |
-| `-l, --limit <n>` | Per-query record cap (default: 100) |
-| `--no-fallback` | Disable router fallback |
-| `-j, --json` | Output raw JSON |
-
-**Examples:**
-
-```bash
-# Find coffee shops via Google Maps
-socialrouter search -q "coffee shops in Brooklyn,bakeries in Brooklyn" -p apify/googlemaps/place.search -l 50
-```
+The detailed view shows the accepted input shapes with examples, the typed options a service takes, and every offer with its price per record and batch cap, in failover order.
 
 ---
 
-### `get` — Retrieve an extraction or search by ID
+### `get` — Retrieve a past run by ID
 
 ```bash
-socialrouter get <id>
+socialrouter get ext_a1b2c3d4
 socialrouter get ext_a1b2c3d4 -j
 ```
 
 ---
 
-### `providers` — List available providers
+### `sources` — List the data sources behind the offers
 
 ```bash
-socialrouter providers
-socialrouter providers -j
+socialrouter sources
+socialrouter sources -j
 ```
-
-Shows status, supported platforms, and both `extract` and `search` types.
 
 ---
 
@@ -154,8 +151,8 @@ Usage (last 30d)
   Records:  4320
   Credits:  $129.60
 
-  By provider:
-    apify: 156 req, 4320 records, $129.60
+  By offer:
+    apify/harshmaur: 156 req, 4320 records, $129.60
 ```
 
 ---
@@ -169,12 +166,20 @@ export SOCIALROUTER_API_KEY=sr_live_...
 # 2. Check your balance
 socialrouter balance
 
-# 3. List providers
-socialrouter providers
+# 3. Find a service
+socialrouter services linkedin
 
-# 4. Run your first extraction
-socialrouter extract -u "https://linkedin.com/posts/johndoe_some-post-id" -p apify/linkedin/post.likes
-
-# 5. Run a search
-socialrouter search -q "coffee shops in Brooklyn" -p apify/googlemaps/place.search
+# 4. Run it
+socialrouter run linkedin/post.likes "https://linkedin.com/posts/johndoe_some-post-id"
 ```
+
+## Migrating from 0.3.x
+
+| 0.3.x | 0.4.0 |
+|---|---|
+| `extract -u <url> -p apify/linkedin/profile.info` | `run linkedin/profile.info <url>` |
+| `extract -U "u1,u2" -p ...` | `run <service> u1 u2` (space-separated) |
+| `search -q "q1,q2" -p apify/googlemaps/place.search` | `run googlemaps/place.search "q1" "q2"` |
+| `-p apify/reddit/group.posts:trudax` | `run reddit/subreddit.posts <url> -p apify/trudax` |
+| `--no-fallback` | pin an offer with `-p` |
+| `providers` | `services` (the catalogue) / `sources` (who's behind it) |
