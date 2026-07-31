@@ -29,7 +29,7 @@ const program = new Command();
 program
   .name("socialrouter")
   .description("CLI for the SocialRouter API, one endpoint per service, routed across sources")
-  .version("0.3.2");
+  .version("0.4.0");
 
 // ─── run ─────────────────────────────────────────────────
 
