@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 
+import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
 import {
   SocialRouter,
-  SERVICE_INPUT_KIND,
   type CatalogueService,
   type Extraction,
 } from "@socialrouter/sdk";
+import { inputField } from "./input-field.js";
 
 function getClient(): SocialRouter {
   const apiKey = process.env.SOCIALROUTER_API_KEY;
@@ -24,22 +25,37 @@ function getClient(): SocialRouter {
   });
 }
 
+/**
+ * Read from package.json rather than hardcoded: the literal here said 0.4.0
+ * while the published package was 0.4.1, so `--version` misreported itself
+ * and there was nothing to notice it. `npm version` is now the only place a
+ * release touches, and npm always ships package.json in the tarball.
+ */
+const VERSION = (
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    version: string;
+  }
+).version;
+
 const program = new Command();
 
 program
   .name("socialrouter")
   .description("CLI for the SocialRouter API, one endpoint per service, routed across sources")
-  .version("0.4.0");
+  .version(VERSION);
 
 // ─── run ─────────────────────────────────────────────────
 
 program
   .command("run")
   .description("Run a service over one or more inputs")
-  .argument("<service>", "Service slug <platform>/<service>, e.g. reddit/subreddit.posts")
+  .argument(
+    "<service>",
+    "Service slug <subject>/<service>, e.g. reddit/subreddit.posts or person/info",
+  )
   .argument(
     "<inputs...>",
-    "URLs (url services) or search queries (query services). Quote queries containing spaces.",
+    "URLs (url services), search queries (query services), or identifiers such as an email or a domain (enrichment services). Quote queries containing spaces.",
   )
   .option(
     "-p, --provider <offer>",
@@ -321,6 +337,7 @@ program.parse();
 type AnyRunInput = {
   urls?: string[];
   queries?: string[];
+  identifiers?: string[];
   provider?: `${string}/${string}`;
   limit?: number;
   options?: Record<string, unknown>;
@@ -337,31 +354,6 @@ function runService(
   );
 }
 
-/**
- * Which body field carries the inputs: `urls` for a URL service, `queries`
- * for a query one. Known services resolve offline from the SDK's generated
- * map; anything newer than this CLI release is looked up in the live
- * catalogue rather than guessed.
- */
-async function inputField(client: SocialRouter, service: string): Promise<"urls" | "queries"> {
-  const known = (SERVICE_INPUT_KIND as Record<string, "url" | "query">)[service];
-  if (known) return known === "query" ? "queries" : "urls";
-
-  const catalogue = await client.listServices();
-  const match = catalogue.find((s) => `${s.platform}/${s.service}` === service);
-  if (!match) {
-    const platform = service.split("/")[0];
-    const onPlatform = catalogue.filter((s) => s.platform === platform);
-    const suggestions = (onPlatform.length ? onPlatform : catalogue)
-      .map((s) => `${s.platform}/${s.service}`)
-      .slice(0, 12);
-    throw new Error(
-      `Unknown service "${service}". Available: ${suggestions.join(", ")}.\n` +
-        "Run `socialrouter services` for the full catalogue.",
-    );
-  }
-  return match.input_field;
-}
 
 function printRun(result: Extraction): void {
   console.log();
