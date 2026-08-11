@@ -16,6 +16,9 @@ function getClient(): SocialRouter {
   if (!apiKey) {
     console.error(chalk.red("Error: SOCIALROUTER_API_KEY environment variable is required."));
     console.error(chalk.dim("Set it with: export SOCIALROUTER_API_KEY=sr_live_..."));
+    console.error(
+      chalk.dim("Create a key at: https://www.socialrouter.io/dashboard/keys"),
+    );
     process.exit(1);
   }
   return new SocialRouter({
