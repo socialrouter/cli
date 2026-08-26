@@ -119,7 +119,7 @@ describe("run", () => {
 
     assert.equal(code, 0);
     const post = lastRequest("POST")!;
-    assert.equal(post.path, "/v1/enrich/person/info");
+    assert.equal(post.path, "/v1/enrich/person");
     assert.deepEqual(post.body, { identifiers: ["ada@analytical.dev"], limit: 100 });
   });
 

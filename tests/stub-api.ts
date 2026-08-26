@@ -56,7 +56,7 @@ export const CATALOGUE = [
   {
     platform: "person",
     service: "info",
-    endpoint: "/v1/enrich/person/info",
+    endpoint: "/v1/enrich/person",
     input_kind: "identifier",
     input_field: "identifiers",
     accepts: [],
@@ -110,7 +110,7 @@ const ROUTES: Record<string, unknown> = {
   "/v1/account/balance": { balance: 9.6512, currency: "USD" },
   "/v1/extractions/ext_abc123": EXTRACTION,
   "/v1/extract/reddit/subreddit.posts": EXTRACTION,
-  "/v1/enrich/person/info": { ...EXTRACTION, platform: "person", service: "info" },
+  "/v1/enrich/person": { ...EXTRACTION, platform: "person", service: "info" },
 };
 
 export async function startStubApi(): Promise<StubApi> {
