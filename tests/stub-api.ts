@@ -81,7 +81,64 @@ export const EXTRACTION = {
   ],
 };
 
+export const CREDENTIAL = {
+  id: "cred_1",
+  source: "apify",
+  label: "prod",
+  status: "active",
+  last_verified_at: "2026-09-01T00:00:00Z",
+  last_used_at: null,
+  created_at: "2026-09-01T00:00:00Z",
+};
+
+export const BYOK_SETTINGS = {
+  byok_mode: "own_first",
+  source_modes: { apify: "own_only" },
+  available_modes: ["own_first", "platform_first", "own_only", "platform_only"],
+  byok_sources: ["apify", "apollo"],
+  byok_only_sources: ["apollo"],
+};
+
+/**
+ * Failures, keyed by path: the status, headers and body the API answers
+ * with. Real services, so the CLI resolves their input field offline.
+ */
+const FAILURES: Record<string, { status: number; headers?: Record<string, string>; body: unknown }> = {
+  // A run that failed upstream carries its id beside the envelope.
+  "/v1/extract/reddit/post.info": {
+    status: 502,
+    body: {
+      error: {
+        code: "provider_credential_rejected",
+        message: "Your apify token was refused.",
+        type: "provider",
+        provider_detail: "token is not valid",
+      },
+      extraction_id: "ext_failed1",
+    },
+  },
+  "/v1/extract/reddit/post.comments": {
+    status: 429,
+    headers: { "Retry-After": "42" },
+    body: { error: { code: "rate_limited", message: "Too many requests.", type: "rate_limit" } },
+  },
+  "/v1/extract/linkedin/job.search": {
+    status: 400,
+    body: {
+      error: {
+        code: "unknown_option",
+        message: 'Unknown option "loc" for linkedin/job.search.',
+        type: "validation",
+        valid_options: ["location", "country"],
+      },
+    },
+  },
+};
+
 const ROUTES: Record<string, unknown> = {
+  "/v1/account/credentials": { data: [CREDENTIAL] },
+  "/v1/account/credentials/apify": CREDENTIAL,
+  "/v1/account/byok-mode": BYOK_SETTINGS,
   "/v1/services": { data: CATALOGUE },
   "/v1/services/reddit": { data: [CATALOGUE[0]] },
   "/v1/services/reddit/subreddit.posts": CATALOGUE[0],
@@ -130,6 +187,18 @@ export async function startStubApi(): Promise<StubApi> {
       });
 
       const [pathname] = path.split("?");
+
+      const failure = FAILURES[pathname];
+      if (failure) {
+        res.writeHead(failure.status, { "content-type": "application/json", ...failure.headers });
+        res.end(JSON.stringify(failure.body));
+        return;
+      }
+      if (req.method === "DELETE" && pathname === "/v1/account/credentials/apify") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ revoked: true, source: "apify", id: "cred_1" }));
+        return;
+      }
       // The usage window is asserted from the recorded query string, so the
       // body only has to be well-shaped.
       const payload =

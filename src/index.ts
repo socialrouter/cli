@@ -6,10 +6,15 @@ import chalk from "chalk";
 import ora from "ora";
 import {
   SocialRouter,
+  type ByokMode,
+  type ByokModeSettings,
   type CatalogueService,
   type Extraction,
+  type ProviderCredential,
 } from "@socialrouter/sdk";
 import { inputField } from "./input-field.js";
+import { describeError } from "./errors.js";
+import { readSecret } from "./secret.js";
 
 function getClient(): SocialRouter {
   const apiKey = process.env.SOCIALROUTER_API_KEY;
@@ -119,7 +124,7 @@ program
       printRun(result);
     } catch (err) {
       if (spinner) spinner.fail("Run failed");
-      console.error(chalk.red(err instanceof Error ? err.message : "Unknown error"));
+      printError(err);
       process.exit(1);
     }
   });
@@ -180,7 +185,7 @@ program
       console.log(chalk.dim("  Details: socialrouter services <platform>/<service>"));
       console.log();
     } catch (err) {
-      console.error(chalk.red(err instanceof Error ? err.message : "Unknown error"));
+      printError(err);
       process.exit(1);
     }
   });
@@ -222,7 +227,7 @@ program
         console.log();
       }
     } catch (err) {
-      console.error(chalk.red(err instanceof Error ? err.message : "Unknown error"));
+      printError(err);
       process.exit(1);
     }
   });
@@ -249,7 +254,7 @@ program
       console.log(`  ${chalk.green.bold(`$${balance.balance.toFixed(2)}`)} ${chalk.dim(balance.currency)}`);
       console.log();
     } catch (err) {
-      console.error(chalk.red(err instanceof Error ? err.message : "Unknown error"));
+      printError(err);
       process.exit(1);
     }
   });
@@ -296,7 +301,7 @@ program
 
       console.log();
     } catch (err) {
-      console.error(chalk.red(err instanceof Error ? err.message : "Unknown error"));
+      printError(err);
       process.exit(1);
     }
   });
@@ -323,7 +328,193 @@ program
       printRun(result);
     } catch (err) {
       if (spinner) spinner.fail("Failed");
-      console.error(chalk.red(err instanceof Error ? err.message : "Unknown error"));
+      printError(err);
+      process.exit(1);
+    }
+  });
+
+// ─── credentials ─────────────────────────────────────────
+
+const credentials = program
+  .command("credentials")
+  .description("Manage your own provider keys (bring your own key)");
+
+credentials
+  .command("list", { isDefault: true })
+  .description("List the provider credentials registered on your account")
+  .option("-j, --json", "Output raw JSON")
+  .action(async (opts) => {
+    const client = getClient();
+    try {
+      const list = await client.listCredentials();
+      if (opts.json) {
+        console.log(JSON.stringify(list, null, 2));
+        return;
+      }
+      console.log();
+      console.log(chalk.bold("Provider credentials"));
+      if (list.length === 0) {
+        console.log(chalk.dim("  None registered. Add one: socialrouter credentials set <source>"));
+      }
+      for (const c of list) printCredential(c);
+      console.log();
+    } catch (err) {
+      printError(err);
+      process.exit(1);
+    }
+  });
+
+credentials
+  .command("set")
+  .description(
+    "Register or replace the token for a source. The token is read from stdin, or prompted for without echo — never passed as an argument.",
+  )
+  .argument("<source>", "Source id, e.g. apify")
+  .option("--label <label>", "A name for this credential")
+  .option("-j, --json", "Output raw JSON")
+  .action(async (source: string, opts) => {
+    const client = getClient();
+    const token = await readSecret(`${source} API token: `);
+    if (!token) {
+      console.error(chalk.red("Error: no token given. Pipe it on stdin or type it at the prompt."));
+      process.exit(1);
+    }
+    const spinner = opts.json ? null : ora(`Verifying the token with ${source}...`).start();
+    try {
+      const credential = await client.setCredential(
+        source,
+        token,
+        opts.label !== undefined ? { label: opts.label } : undefined,
+      );
+      if (spinner) spinner.succeed(`${source} credential saved`);
+      if (opts.json) {
+        console.log(JSON.stringify(credential, null, 2));
+        return;
+      }
+      printCredential(credential);
+      console.log();
+    } catch (err) {
+      if (spinner) spinner.fail("Not saved");
+      printError(err);
+      process.exit(1);
+    }
+  });
+
+credentials
+  .command("rename")
+  .description("Rename a source's credential. Omit the label to clear it.")
+  .argument("<source>", "Source id, e.g. apify")
+  .argument("[label]", "The new label")
+  .option("-j, --json", "Output raw JSON")
+  .action(async (source: string, label: string | undefined, opts) => {
+    const client = getClient();
+    try {
+      const credential = await client.renameCredential(source, label ?? null);
+      if (opts.json) {
+        console.log(JSON.stringify(credential, null, 2));
+        return;
+      }
+      printCredential(credential);
+      console.log();
+    } catch (err) {
+      printError(err);
+      process.exit(1);
+    }
+  });
+
+credentials
+  .command("remove")
+  .description("Revoke a source's credential")
+  .argument("<source>", "Source id, e.g. apify")
+  .option("-j, --json", "Output raw JSON")
+  .action(async (source: string, opts) => {
+    const client = getClient();
+    try {
+      const res = await client.removeCredential(source);
+      if (opts.json) {
+        console.log(JSON.stringify(res, null, 2));
+        return;
+      }
+      console.log(chalk.green(`${res.source} credential revoked.`));
+    } catch (err) {
+      printError(err);
+      process.exit(1);
+    }
+  });
+
+// ─── byok-mode ───────────────────────────────────────────
+
+const BYOK_MODES: ByokMode[] = ["own_first", "platform_first", "own_only", "platform_only"];
+
+const byokMode = program
+  .command("byok-mode")
+  .description("Which account runs are billed to: your own provider keys or SocialRouter credits");
+
+byokMode
+  .command("show", { isDefault: true })
+  .description("Show the account default and the sources that depart from it")
+  .option("-j, --json", "Output raw JSON")
+  .action(async (opts) => {
+    const client = getClient();
+    try {
+      const settings = await client.getByokMode();
+      if (opts.json) {
+        console.log(JSON.stringify(settings, null, 2));
+        return;
+      }
+      printByokMode(settings);
+    } catch (err) {
+      printError(err);
+      process.exit(1);
+    }
+  });
+
+byokMode
+  .command("set")
+  .description(`Set the account default, or one source's mode with --source. Modes: ${BYOK_MODES.join(", ")}`)
+  .argument("<mode>", BYOK_MODES.join(" | "))
+  .option("-s, --source <source>", "Scope the mode to one source, e.g. apify")
+  .option("-j, --json", "Output raw JSON")
+  .action(async (mode: string, opts) => {
+    // Checked here as well as by the API: a typo should not cost a round
+    // trip, and the list of modes is part of the SDK's types.
+    if (!(BYOK_MODES as string[]).includes(mode)) {
+      console.error(chalk.red(`Error: unknown mode "${mode}". Modes: ${BYOK_MODES.join(", ")}.`));
+      process.exit(1);
+    }
+    const client = getClient();
+    try {
+      const settings = await client.setByokMode(
+        mode as ByokMode,
+        opts.source ? { source: opts.source } : undefined,
+      );
+      if (opts.json) {
+        console.log(JSON.stringify(settings, null, 2));
+        return;
+      }
+      printByokMode(settings);
+    } catch (err) {
+      printError(err);
+      process.exit(1);
+    }
+  });
+
+byokMode
+  .command("clear")
+  .description("Drop a source's own mode, so it follows the account default again")
+  .requiredOption("-s, --source <source>", "The source to reset, e.g. apify")
+  .option("-j, --json", "Output raw JSON")
+  .action(async (opts) => {
+    const client = getClient();
+    try {
+      const settings = await client.setByokMode(null, { source: opts.source });
+      if (opts.json) {
+        console.log(JSON.stringify(settings, null, 2));
+        return;
+      }
+      printByokMode(settings);
+    } catch (err) {
+      printError(err);
       process.exit(1);
     }
   });
@@ -331,6 +522,37 @@ program
 program.parse();
 
 // ─── helpers ─────────────────────────────────────────────
+
+function printError(err: unknown): void {
+  const [first, ...rest] = describeError(err);
+  console.error(chalk.red(first));
+  for (const line of rest) console.error(chalk.dim(line));
+}
+
+function printCredential(c: ProviderCredential): void {
+  const status = c.status === "active" ? chalk.green("[active]") : chalk.red("[invalid]");
+  console.log(`  ${chalk.bold(c.source)} ${status}${c.label ? chalk.dim(` ${c.label}`) : ""}`);
+  console.log(
+    chalk.dim(
+      `    verified ${c.last_verified_at ?? "never"} · last used ${c.last_used_at ?? "never"}`,
+    ),
+  );
+}
+
+function printByokMode(s: ByokModeSettings): void {
+  console.log();
+  console.log(`${chalk.bold("Default:")} ${chalk.green(s.byok_mode)}`);
+  const overrides = Object.entries(s.source_modes);
+  if (overrides.length > 0) {
+    console.log(chalk.bold("Per source:"));
+    for (const [source, mode] of overrides) console.log(`  ${source}: ${chalk.green(mode)}`);
+  }
+  console.log(chalk.dim(`Sources that accept your key: ${s.byok_sources.join(", ") || "none"}`));
+  if (s.byok_only_sources.length > 0) {
+    console.log(chalk.dim(`Reachable only with your key: ${s.byok_only_sources.join(", ")}`));
+  }
+  console.log();
+}
 
 /**
  * The CLI dispatches over a runtime slug, so the SDK's per-service typing
@@ -366,9 +588,11 @@ function printRun(result: Extraction): void {
       ? `${result.served_by} ${chalk.dim(`(fell over from ${result.fallback_from})`)}`
       : result.served_by
     : chalk.dim("none");
+  // Who paid is stated, never inferred: a failover chain can mix accounts.
+  const billed = result.billed_as === "own" ? " | Billed to: your provider key" : "";
   console.log(
     chalk.dim(
-      `Service: ${result.platform}/${result.service} | Served by: ${servedBy} | Credits: $${result.credits_used}`,
+      `Service: ${result.platform}/${result.service} | Served by: ${servedBy} | Credits: $${result.credits_used}${billed}`,
     ),
   );
   if (result.queries?.length) {
@@ -425,13 +649,18 @@ function printServiceDetail(s: CatalogueService): void {
     console.log(chalk.bold("  Options"));
     for (const o of s.options) {
       const type = o.type === "enum" ? (o.values ?? []).join(" | ") : o.type;
-      console.log(`    ${chalk.green(o.name)} ${chalk.dim(`(${type})`)}`);
+      console.log(
+        `    ${chalk.green(o.name)} ${chalk.dim(`(${type})`)}${o.required ? chalk.yellow(" required") : ""}`,
+      );
       console.log(
         chalk.dim(
           `      ${o.description}` +
-            (o.default !== undefined ? ` Default: ${JSON.stringify(o.default)}.` : ""),
+            (o.default !== undefined ? ` Default: ${JSON.stringify(o.default)}.` : "") +
+            (o.example !== undefined ? ` Example: ${JSON.stringify(o.example)}.` : ""),
         ),
       );
+      // Only the listed offers read it; the others ignore it.
+      if (o.offers?.length) console.log(chalk.dim(`      Only honoured by: ${o.offers.join(", ")}`));
     }
     console.log();
   }
@@ -440,14 +669,21 @@ function printServiceDetail(s: CatalogueService): void {
   s.offers.forEach((o, i) => {
     console.log(
       `    ${chalk.green(o.offer)} ${chalk.dim(
-        `$${o.price_per_record}/record · up to ${o.max_inputs} inputs`,
+        o.requires_own_key
+          ? `your own ${o.source} key · up to ${o.max_inputs} inputs`
+          : `$${o.price_per_record}/record · up to ${o.max_inputs} inputs`,
       )}${i === 0 ? chalk.dim(" · default route") : ""}`,
     );
   });
   console.log();
+  // A required option has to be in the example, or the example is a 400.
+  const required = Object.fromEntries(
+    s.options.filter((o) => o.required).map((o) => [o.name, o.example ?? `<${o.name}>`]),
+  );
+  const optionsFlag = Object.keys(required).length ? ` --options '${JSON.stringify(required)}'` : "";
   console.log(
     chalk.dim(
-      `  Run it: socialrouter run ${s.platform}/${s.service} "${s.accepts[0]?.example ?? "<input>"}"`,
+      `  Run it: socialrouter run ${s.platform}/${s.service} "${s.accepts[0]?.example ?? "<input>"}"${optionsFlag}`,
     ),
   );
   console.log();

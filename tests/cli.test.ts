@@ -63,6 +63,27 @@ function run(args: string[], env: Record<string, string | null> = {}): Promise<R
   });
 }
 
+/** Run the CLI with `input` piped on stdin. */
+function runWithStdin(args: string[], input: string): Promise<Result> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [ENTRY, ...args], {
+      env: {
+        PATH: process.env.PATH ?? "",
+        SOCIALROUTER_API_KEY: "sr_test_key",
+        SOCIALROUTER_BASE_URL: api.baseUrl,
+        NO_COLOR: "1",
+        FORCE_COLOR: "0",
+      },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (c) => (stdout += String(c)));
+    child.stderr.on("data", (c) => (stderr += String(c)));
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+    child.stdin.end(input);
+  });
+}
+
 const lastRequest = (method: string) => [...api.requests].reverse().find((r) => r.method === method);
 
 describe("socialrouter", () => {
@@ -77,7 +98,7 @@ describe("socialrouter", () => {
   test("lists its commands in --help", async () => {
     const { code, stdout } = await run(["--help"]);
     assert.equal(code, 0);
-    for (const command of ["run", "services", "sources", "balance", "usage", "get"]) {
+    for (const command of ["run", "services", "sources", "balance", "usage", "get", "credentials", "byok-mode"]) {
       assert.match(stdout, new RegExp(`\\b${command}\\b`), `${command} missing from --help`);
     }
   });
@@ -310,5 +331,108 @@ describe("account commands", () => {
     assert.equal(lastRequest("GET")!.path, "/v1/extractions/ext_abc123");
     assert.match(stdout, /ext_abc123/);
     assert.match(stdout, /Ada Lovelace/);
+  });
+});
+
+describe("errors", () => {
+  test("a failed run prints its id and the provider's own words", async () => {
+    const { code, stderr } = await run(["run", "reddit/post.info", "https://www.reddit.com/r/x/comments/abc/t"]);
+    assert.equal(code, 1);
+    assert.match(stderr, /Your apify token was refused\./);
+    assert.match(stderr, /Provider said: token is not valid/);
+    assert.match(stderr, /Run id: ext_failed1/);
+  });
+
+  test("a rate limit says how long to wait", async () => {
+    const { code, stderr } = await run(["run", "reddit/post.comments", "https://www.reddit.com/r/x/comments/abc/t"]);
+    assert.equal(code, 1);
+    assert.match(stderr, /Retry in 42s\./);
+  });
+
+  test("a validation error lists what would have been valid", async () => {
+    const { code, stderr } = await run([
+      "run",
+      "linkedin/job.search",
+      "engineer",
+      "--options",
+      '{"loc":"Paris"}',
+    ]);
+    assert.equal(code, 1);
+    assert.match(stderr, /Valid options: location, country/);
+  });
+});
+
+describe("credentials", () => {
+  test("list shows each credential and never a token", async () => {
+    const { code, stdout } = await run(["credentials"]);
+    assert.equal(code, 0);
+    assert.equal(lastRequest("GET")!.path, "/v1/account/credentials");
+    assert.match(stdout, /apify/);
+    assert.match(stdout, /\[active\]/);
+    assert.match(stdout, /prod/);
+  });
+
+  test("set reads the token from stdin, not from argv", async () => {
+    const { code } = await runWithStdin(["credentials", "set", "apify", "--label", "prod"], "apify_api_secret\n");
+    assert.equal(code, 0);
+    const put = lastRequest("PUT")!;
+    assert.equal(put.path, "/v1/account/credentials/apify");
+    assert.deepEqual(put.body, { token: "apify_api_secret", label: "prod" });
+  });
+
+  test("set refuses an empty token before calling the API", async () => {
+    const before = api.requests.length;
+    const { code, stderr } = await runWithStdin(["credentials", "set", "apify"], "");
+    assert.equal(code, 1);
+    assert.match(stderr, /no token given/);
+    assert.equal(api.requests.length, before);
+  });
+
+  test("rename without a label clears it", async () => {
+    const { code } = await run(["credentials", "rename", "apify"]);
+    assert.equal(code, 0);
+    const patch = lastRequest("PATCH")!;
+    assert.equal(patch.path, "/v1/account/credentials/apify");
+    assert.deepEqual(patch.body, { label: null });
+  });
+
+  test("remove revokes by source", async () => {
+    const { code, stdout } = await run(["credentials", "remove", "apify"]);
+    assert.equal(code, 0);
+    assert.equal(lastRequest("DELETE")!.path, "/v1/account/credentials/apify");
+    assert.match(stdout, /apify credential revoked/);
+  });
+});
+
+describe("byok-mode", () => {
+  test("shows the default and the per-source departures", async () => {
+    const { code, stdout } = await run(["byok-mode"]);
+    assert.equal(code, 0);
+    assert.equal(lastRequest("GET")!.path, "/v1/account/byok-mode");
+    assert.match(stdout, /Default: own_first/);
+    assert.match(stdout, /apify: own_only/);
+    assert.match(stdout, /Reachable only with your key: apollo/);
+  });
+
+  test("set writes the default, or one source with --source", async () => {
+    await run(["byok-mode", "set", "platform_first"]);
+    assert.deepEqual(lastRequest("PUT")!.body, { byok_mode: "platform_first" });
+
+    await run(["byok-mode", "set", "own_only", "--source", "apify"]);
+    assert.deepEqual(lastRequest("PUT")!.body, { byok_mode: "own_only", source: "apify" });
+  });
+
+  test("clear sends null for the source", async () => {
+    const { code } = await run(["byok-mode", "clear", "--source", "apify"]);
+    assert.equal(code, 0);
+    assert.deepEqual(lastRequest("PUT")!.body, { byok_mode: null, source: "apify" });
+  });
+
+  test("an unknown mode fails locally, listing the valid ones", async () => {
+    const before = api.requests.length;
+    const { code, stderr } = await run(["byok-mode", "set", "always"]);
+    assert.equal(code, 1);
+    assert.match(stderr, /own_first, platform_first, own_only, platform_only/);
+    assert.equal(api.requests.length, before);
   });
 });

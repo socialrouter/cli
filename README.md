@@ -157,6 +157,41 @@ Usage (last 30d)
 
 ---
 
+### `credentials` — Bring your own provider key
+
+Run on your own provider account instead of SocialRouter credits. The token is checked with the provider before it is stored, and it can never be read back.
+
+The token is never an argument (it would land in your shell history): pipe it on stdin, or type it at the prompt, which does not echo.
+
+```bash
+socialrouter credentials                            # list
+echo "$APIFY_TOKEN" | socialrouter credentials set apify --label prod
+socialrouter credentials set apify                  # prompts for the token
+socialrouter credentials rename apify staging       # omit the label to clear it
+socialrouter credentials remove apify
+```
+
+---
+
+### `byok-mode` — Choose which account pays
+
+`own_first` (your key, else credits), `platform_first`, `own_only` (never spend credits), `platform_only` (never use your key). Every run then says who paid.
+
+```bash
+socialrouter byok-mode                              # show
+socialrouter byok-mode set own_first                # account default
+socialrouter byok-mode set own_only --source apify  # one source departs
+socialrouter byok-mode clear --source apify         # back to the default
+```
+
+---
+
+## Errors
+
+A failed command exits 1 and prints what fixes it: the valid options or values, the inputs that failed, the provider's own message on a run placed on your key, how long to wait on a rate limit, and the id of a failed run (`socialrouter get <id>`).
+
+---
+
 ## Quick Start
 
 ```bash
