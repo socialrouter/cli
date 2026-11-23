@@ -62,10 +62,13 @@ jobs:
         env:
           SDK_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          for attempt in 1 2 3 4 5 6; do
+          # 10 attempts: every 30s for the first 5, then every 60s for the last 5.
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
             if npm install --save "@socialrouter/sdk@^$SDK_VERSION"; then exit 0; fi
-            echo "SDK $SDK_VERSION not on the registry yet (attempt $attempt) — waiting."
-            sleep 20
+            delay=30
+            if [ "$attempt" -gt 5 ]; then delay=60; fi
+            echo "SDK $SDK_VERSION not on the registry yet (attempt $attempt) — waiting ${delay}s."
+            sleep "$delay"
           done
           echo "::error::@socialrouter/sdk@$SDK_VERSION never became installable." >&2
           exit 1
